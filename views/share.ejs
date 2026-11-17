@@ -1,0 +1,59 @@
+<%- include('partials/head', { title: `${cert.fullName} — ${cert.courseTitle} | Coursera`, description: `Certificate of completion: ${cert.courseTitle}` }) %>
+<%- include('partials/header') %>
+
+<main class="container page">
+  <h1 class="page__title"><%= cert.courseTitle %></h1>
+
+  <div class="share-grid">
+    <section class="share-left">
+      <div class="completed-card">
+        <div class="completed-card__avatar">
+          <svg viewBox="0 0 96 96" aria-hidden="true"><circle cx="48" cy="48" r="48" fill="#e1e3e6"/><circle cx="48" cy="38" r="15" fill="#fff"/><path d="M22 74c2-14 12-21 26-21s24 7 26 21z" fill="#fff"/></svg>
+          <span class="completed-card__check" aria-label="Verified">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12.5l4 4 8-9" fill="none" stroke="#1f1f1f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+        </div>
+        <div class="completed-card__body">
+          <h2 class="completed-card__name">Completed by <%= cert.fullName %></h2>
+          <p class="completed-card__meta"><%= formatDate(cert.completedAt) %></p>
+          <p class="completed-card__meta"><%= cert.hours %> <%= cert.hours === 1 ? "hour" : "hours" %> (approximately)</p>
+          <p class="completed-card__text">
+            <%= cert.fullName %>'s account is verified. Coursera certifies their successful completion of
+            <a href="/" class="u-link"><%= cert.courseTitle %></a>
+          </p>
+        </div>
+      </div>
+
+      <div class="course-row">
+        <div class="course-row__info">
+          <img class="course-row__logo" src="/static/img/learn-mark.svg" alt="">
+          <div>
+            <a href="/" class="course-row__title"><%= cert.courseTitle %></a>
+            <div class="course-row__provider">learn <span class="brand__tag brand__tag--inline">clone</span></div>
+            <div class="course-row__stats">
+              <span class="stars" aria-label="<%= course.rating %> out of 5">
+                <% for (let i = 1; i <= 5; i++) { %>
+                  <svg viewBox="0 0 24 24" class="star <%= course.rating >= i - 0.25 ? 'is-full' : (course.rating >= i - 0.75 ? 'is-half' : '') %>" aria-hidden="true">
+                    <defs><linearGradient id="half<%= i %>"><stop offset="50%" stop-color="#c0570c"/><stop offset="50%" stop-color="transparent"/></linearGradient></defs>
+                    <path d="M12 2.8l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.2l-5.7 3.1 1.2-6.4L2.8 9.5l6.4-.8z" fill="<%= course.rating >= i - 0.25 ? '#c0570c' : (course.rating >= i - 0.75 ? `url(#half${i})` : 'none') %>" stroke="#c0570c" stroke-width="1.4" stroke-linejoin="round"/>
+                  </svg>
+                <% } %>
+              </span>
+              <span class="course-row__rating"><%= course.rating %> (<%= formatNumber(course.ratingsCount) %> ratings)</span>
+              <span class="course-row__enrolled"><%= formatNumber(course.enrolled) %> already enrolled</span>
+            </div>
+          </div>
+        </div>
+        <a href="https://www.coursera.org/" class="btn-primary">Enroll for Free</a>
+      </div>
+    </section>
+
+    <section class="share-right">
+      <div class="cert-frame">
+        <%- include('partials/certificate', { cert, verifyLink }) %>
+      </div>
+    </section>
+  </div>
+</main>
+
+<%- include('partials/footer') %>

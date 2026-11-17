@@ -1,0 +1,25 @@
+{
+  "name": "learn-clone-certificates",
+  "version": "1.0.0",
+  "description": "Learn (clone) — portfolio project: certificate verification site + Telegram bot + MongoDB",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^18.0.10",
+    "ejs": "^7.0.2",
+    "express": "^4.22.3",
+    "mongoose": "^8.24.10",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.3.0"
+  }
+}

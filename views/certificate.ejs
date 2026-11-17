@@ -1,0 +1,12 @@
+<%- include('partials/head', { title: `Certificate — ${cert.fullName} | Coursera` }) %>
+<div class="print-page">
+  <div class="print-toolbar no-print">
+    <a href="/share/<%= cert.shareId %>" class="btn-outline">← Back</a>
+    <button class="btn-primary" type="button" onclick="window.print()">Download PDF / Print</button>
+  </div>
+  <div class="print-cert">
+    <%- include('partials/certificate', { cert, verifyLink }) %>
+  </div>
+</div>
+</body>
+</html>

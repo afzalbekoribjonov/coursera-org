@@ -1,0 +1,30 @@
+<%- include('partials/head', { title: 'Coursera — Certificate verification' }) %>
+<%- include('partials/header') %>
+
+<main class="container page">
+  <section class="hero">
+    <h1 class="page__title">Verify a certificate</h1>
+    <p class="hero__text">Paste a certificate link or the 12-character verification code printed on the certificate.</p>
+    <form class="lookup" action="/lookup" method="post">
+      <input class="lookup__input" name="q" placeholder="e.g. 0MWPOAJ6QEHG or https://…/share/…" required>
+      <button class="btn-primary" type="submit">Verify</button>
+    </form>
+    <% if (error) { %><p class="lookup__error"><%= error %></p><% } %>
+    <p class="hero__count"><%= formatNumber(total) %> certificates issued</p>
+  </section>
+
+  <section>
+    <h2 class="section-title">Courses</h2>
+    <div class="course-grid">
+      <% courses.forEach(c => { %>
+        <div class="course-card">
+          <img src="/static/img/learn-mark.svg" alt="" class="course-card__logo">
+          <div class="course-card__title"><%= c.title %></div>
+          <div class="course-card__meta">learn · <%= c.hours %> hours · ★ <%= c.rating %></div>
+        </div>
+      <% }) %>
+    </div>
+  </section>
+</main>
+
+<%- include('partials/footer') %>
