@@ -27,6 +27,7 @@ function createApp() {
   app.locals.formatDate = formatDate;
   app.locals.formatNumber = (n) => Number(n).toLocaleString('en-US');
 
+  app.head('/health', (req, res) => res.status(200).end());
   app.get('/health', (req, res) => res.json({ ok: true }));
 
   app.get('/', async (req, res, next) => {
