@@ -2,6 +2,7 @@ const { Telegraf, Markup, Input } = require('telegraf');
 const Certificate = require('./models/Certificate');
 const { createCertificate, normalizeFullName, courses, shareUrl } = require('./services/certificates');
 const { createCertificatesWorkbook } = require('./services/certificate-export');
+const { callTelegramApiWithTimeout } = require('./services/telegram-upload');
 const { botToken, adminIds, publicUrl, useWebhook, webhookSecret } = require('./config');
 
 const pending = new Map();
@@ -151,7 +152,11 @@ async function sendExport(telegram, chatId, statusMessageId) {
     let retried = false;
     while (true) {
       try {
-        await telegram.sendDocument(chatId, Input.fromBuffer(workbook, filename), options);
+        await callTelegramApiWithTimeout(telegram, 'sendDocument', {
+          chat_id: chatId,
+          document: Input.fromBuffer(workbook, filename),
+          ...options,
+        }, 30000);
         break;
       } catch (e) {
         if (retried || !['ECONNRESET', 'ETIMEDOUT'].includes(e.code)) throw e;
