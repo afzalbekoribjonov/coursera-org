@@ -2,7 +2,6 @@ const { Telegraf, Markup, Input } = require('telegraf');
 const Certificate = require('./models/Certificate');
 const { createCertificate, normalizeFullName, courses, shareUrl } = require('./services/certificates');
 const { createCertificatesWorkbook } = require('./services/certificate-export');
-const { callTelegramApiWithTimeout } = require('./services/telegram-upload');
 const { botToken, adminIds, publicUrl, useWebhook, webhookSecret } = require('./config');
 
 const pending = new Map();
@@ -154,22 +153,7 @@ async function sendExport(telegram, chatId, statusMessageId) {
 
     const filename = `sertifikatlar-${new Date().toISOString().slice(0, 10)}.xlsx`;
     const options = { caption: 'Parol ustunidagi qiymatlar ism asosida yaratilgan demo qiymatlar, haqiqiy login parollari emas.' };
-    let retried = false;
-    while (true) {
-      try {
-        await callTelegramApiWithTimeout(telegram, 'sendDocument', {
-          chat_id: chatId,
-          document: Input.fromBuffer(workbook, filename),
-          ...options,
-        }, 30000);
-        break;
-      } catch (e) {
-        if (retried || !['ECONNRESET', 'ETIMEDOUT'].includes(e.code)) throw e;
-        retried = true;
-        console.warn('[bot] export upload connection reset; retrying once');
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    }
+    await telegram.sendDocument(chatId, Input.fromBuffer(workbook, filename), options);
   } catch (e) {
     logBotError('[bot] export error', e);
     const text = e.code === 'EXPORT_TOO_LARGE'
