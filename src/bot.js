@@ -5,6 +5,26 @@ const { createCertificatesWorkbook } = require('./services/certificate-export');
 const { botToken, adminIds, publicUrl, useWebhook, webhookSecret } = require('./config');
 
 const pending = new Map();
+const activeExports = new Set();
+const maxTelegramDocumentBytes = 50 * 1024 * 1024;
+
+function logBotError(label, error) {
+  const detail = error?.stack || error?.message || String(error);
+  const sanitized = String(detail).replace(/https:\/\/api\.telegram\.org\/bot[^/\s]+/g, 'https://api.telegram.org/bot[REDACTED]');
+  console.error(label, sanitized);
+}
+
+async function answerCallback(ctx, text, extra) {
+  try {
+    await ctx.answerCbQuery(text, extra);
+  } catch (e) {
+    if (e?.response?.error_code === 400 && /query is too old|query ID is invalid/i.test(e.response.description || '')) {
+      console.warn('[bot] callback expired before acknowledgement');
+      return;
+    }
+    throw e;
+  }
+}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -88,7 +108,7 @@ async function deletePrivateMessage(ctx) {
   try {
     await ctx.deleteMessage();
   } catch (e) {
-    console.warn('[bot] input message cleanup failed:', e.message);
+    logBotError('[bot] input message cleanup failed', e);
   }
 }
 
@@ -102,29 +122,64 @@ async function showCertificateList(ctx, edit = false) {
   return ctx.reply(text, options);
 }
 
-async function sendExport(ctx, editMenu = false) {
+async function updateExportStatus(telegram, chatId, messageId, text) {
+  try {
+    await telegram.editMessageText(chatId, messageId, undefined, text, mainKeyboard());
+  } catch (e) {
+    logBotError('[bot] export status error', e);
+  }
+}
+
+async function sendExport(telegram, chatId, statusMessageId) {
   try {
     const certificates = await Certificate.find().sort({ createdAt: -1, _id: -1 }).lean();
     if (!certificates.length) {
-      if (editMenu) return ctx.editMessageText('Eksport qilish uchun sertifikat topilmadi.', mainKeyboard());
-      return ctx.reply('Eksport qilish uchun sertifikat topilmadi.', mainKeyboard());
+      await updateExportStatus(telegram, chatId, statusMessageId, 'Eksport qilish uchun sertifikat topilmadi.');
+      return;
     }
 
     const workbook = await createCertificatesWorkbook(certificates);
+    console.info(`[bot] export prepared: ${certificates.length} records, ${workbook.length} bytes`);
+    if (workbook.length > maxTelegramDocumentBytes) {
+      const error = new Error('Excel fayli Telegram’ning 50 MB limitidan katta.');
+      error.code = 'EXPORT_TOO_LARGE';
+      throw error;
+    }
+
     const filename = `sertifikatlar-${new Date().toISOString().slice(0, 10)}.xlsx`;
-    const options = {
-      caption: 'Parol ustunidagi qiymatlar ism asosida yaratilgan demo qiymatlar, haqiqiy login parollari emas.',
-    };
-    if (!editMenu) Object.assign(options, mainKeyboard());
-    await ctx.replyWithDocument(Input.fromBuffer(workbook, filename), options);
+    const options = { caption: 'Parol ustunidagi qiymatlar ism asosida yaratilgan demo qiymatlar, haqiqiy login parollari emas.' };
+    let retried = false;
+    while (true) {
+      try {
+        await telegram.sendDocument(chatId, Input.fromBuffer(workbook, filename), options);
+        break;
+      } catch (e) {
+        if (retried || !['ECONNRESET', 'ETIMEDOUT'].includes(e.code)) throw e;
+        retried = true;
+        console.warn('[bot] export upload connection reset; retrying once');
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
   } catch (e) {
-    console.error('[bot] export error', e);
-    if (editMenu) return ctx.editMessageText('❌ Excel eksportida xatolik yuz berdi.', mainKeyboard());
-    return ctx.reply('❌ Excel eksportida xatolik yuz berdi.', mainKeyboard());
+    logBotError('[bot] export error', e);
+    const text = e.code === 'EXPORT_TOO_LARGE'
+      ? '❌ Excel fayli Telegram yuborish limitidan katta chiqdi.'
+      : '❌ Excel yuborilmadi. Bir ozdan so‘ng /export ni qayta yuboring.';
+    await updateExportStatus(telegram, chatId, statusMessageId, text);
+    return;
   }
-  if (editMenu) {
-    return ctx.editMessageText('✅ Excel fayli yuborildi.', mainKeyboard());
+  await updateExportStatus(telegram, chatId, statusMessageId, '✅ Excel fayli yuborildi.');
+}
+
+function startExport(telegram, chatId, statusMessageId) {
+  if (activeExports.has(chatId)) {
+    void updateExportStatus(telegram, chatId, statusMessageId, '⏳ Excel eksporti allaqachon tayyorlanmoqda.');
+    return;
   }
+  activeExports.add(chatId);
+  void sendExport(telegram, chatId, statusMessageId)
+    .catch((e) => logBotError('[bot] export task error', e))
+    .finally(() => activeExports.delete(chatId));
 }
 
 async function promptForAction(ctx, type, text) {
@@ -202,14 +257,15 @@ function createBot() {
   });
 
   bot.command('export', async (ctx) => {
-    const message = await sendExport(ctx);
+    const message = await ctx.reply('⏳ Excel fayli tayyorlanmoqda…', mainKeyboard());
     await deletePrivateMessage(ctx);
+    startExport(ctx.telegram, ctx.chat.id, message.message_id);
     return message;
   });
 
   bot.action(/^menu:(new|list|find|delete|export|home)$/, async (ctx) => {
     const action = ctx.match[1];
-    await ctx.answerCbQuery();
+    await answerCallback(ctx);
 
     if (action === 'home') {
       pending.delete(ctx.chat.id);
@@ -225,17 +281,18 @@ function createBot() {
       return promptForAction(ctx, 'delete', '🗑 O‘chirish uchun sertifikat kodini yuboring:');
     }
     if (action === 'list') return showCertificateList(ctx, true);
-    return sendExport(ctx, true);
+    await ctx.editMessageText('⏳ Excel fayli tayyorlanmoqda…', mainKeyboard());
+    startExport(ctx.telegram, ctx.chat.id, ctx.callbackQuery.message.message_id);
   });
 
   bot.action(/^course:(.+)$/, async (ctx) => {
     const state = pending.get(ctx.chat.id);
     if (state?.type !== 'course' || !state.name) {
-      await ctx.answerCbQuery('Avval ism-familiyani yuboring.', { show_alert: true });
+      await answerCallback(ctx, 'Avval ism-familiyani yuboring.', { show_alert: true });
       return;
     }
 
-    await ctx.answerCbQuery('Yaratilmoqda...');
+    await answerCallback(ctx, 'Yaratilmoqda...');
     let result;
     try {
       result = await createCertificate({
@@ -245,7 +302,7 @@ function createBot() {
         username: ctx.from.username,
       });
     } catch (e) {
-      console.error('[bot] create error', e);
+      logBotError('[bot] create error', e);
       return ctx.reply(`Xatolik: ${e.message}`, mainKeyboard());
     }
 
@@ -259,7 +316,7 @@ function createBot() {
     try {
       return await ctx.editMessageText(text, options);
     } catch (e) {
-      console.error('[bot] result edit error', e);
+      logBotError('[bot] result edit error', e);
       return ctx.replyWithHTML(text, options);
     }
   });
@@ -329,7 +386,7 @@ function createBot() {
     return message;
   });
 
-  bot.catch((err) => console.error('[bot] error', err));
+  bot.catch((err) => logBotError('[bot] error', err));
 
   return bot;
 }
@@ -345,7 +402,7 @@ async function startBot(app) {
     console.log(`[bot] webhook rejimi: ${publicUrl}/telegram/webhook/***`);
   } else {
     await bot.telegram.deleteWebhook().catch(() => {});
-    bot.launch().catch((e) => console.error('[bot] launch error', e));
+    bot.launch().catch((e) => logBotError('[bot] launch error', e));
     console.log('[bot] polling rejimi ishga tushdi');
   }
 
