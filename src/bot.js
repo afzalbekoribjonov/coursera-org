@@ -1,20 +1,48 @@
-const { Telegraf, Markup } = require('telegraf');
+const { Telegraf, Markup, Input } = require('telegraf');
 const Certificate = require('./models/Certificate');
 const { createCertificate, normalizeFullName, courses, shareUrl } = require('./services/certificates');
+const { createCertificatesWorkbook } = require('./services/certificate-export');
 const { botToken, adminIds, publicUrl, useWebhook, webhookSecret } = require('./config');
 
-// Har bir chat uchun vaqtinchalik holat: kiritilgan ism-familiya
 const pending = new Map();
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+function mainKeyboard() {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback('➕ Yangi sertifikat', 'menu:new'),
+      Markup.button.callback('📋 Ro‘yxat', 'menu:list'),
+    ],
+    [
+      Markup.button.callback('🔎 Qidirish', 'menu:find'),
+      Markup.button.callback('🗑 O‘chirish', 'menu:delete'),
+    ],
+    [Markup.button.callback('📤 Excel eksport', 'menu:export')],
+  ]);
+}
+
+function cancelKeyboard() {
+  return Markup.inlineKeyboard([[Markup.button.callback('❌ Bekor qilish', 'menu:home')]]);
+}
+
 function courseKeyboard() {
   return Markup.inlineKeyboard([
     ...courses.map((c) => [Markup.button.callback(c.title, `course:${c.slug}`)]),
-    [Markup.button.callback('❌ Bekor qilish', 'cancel')],
+    [Markup.button.callback('❌ Bekor qilish', 'menu:home')],
   ]);
+}
+
+function menuText() {
+  return [
+    '👋 <b>Learn (clone)</b> — sertifikat boti',
+    '',
+    'Kerakli amalni tugmalardan tanlang. Yangi sertifikat uchun ism-familiyani yuboring.',
+    '',
+    'Buyruqlar: /new, /list, /find ism, /delete KOD, /export',
+  ].join('\n');
 }
 
 function resultMessage(cert, password, link) {
@@ -29,10 +57,80 @@ function resultMessage(cert, password, link) {
     `🔑 <b>Parol:</b> <code>${escapeHtml(password)}</code>`,
     `🆔 <b>Kod:</b> <code>${cert.verifyCode}</code>`,
     '',
-    `🔗 <b>Tasdiqlash linki:</b>\n${link}`,
+    `🔗 <b>Tasdiqlash linki:</b>\n${escapeHtml(link)}`,
     '',
-    '<i>Parol faqat hozir ko\'rsatiladi — bazada shifrlangan holda saqlanadi.</i>',
+    '<i>Parol bazada bcrypt hash ko‘rinishida saqlanadi va qayta tiklanmaydi.</i>',
   ].join('\n');
+}
+
+function resultKeyboard(link) {
+  const rows = [];
+  if (!/^https?:\/\/(localhost|127\.)/.test(link)) {
+    rows.push([Markup.button.url('🌐 Sahifani ochish', link)]);
+  }
+  rows.push([Markup.button.callback('🏠 Bosh menyu', 'menu:home')]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function promptOptions() {
+  return { parse_mode: 'HTML', ...cancelKeyboard() };
+}
+
+async function updatePrompt(ctx, state, text, extra = {}) {
+  if (state?.messageId) {
+    return ctx.telegram.editMessageText(ctx.chat.id, state.messageId, undefined, text, extra);
+  }
+  return ctx.replyWithHTML(text, extra);
+}
+
+async function deletePrivateMessage(ctx) {
+  if (ctx.chat.type !== 'private') return;
+  try {
+    await ctx.deleteMessage();
+  } catch (e) {
+    console.warn('[bot] input message cleanup failed:', e.message);
+  }
+}
+
+async function showCertificateList(ctx, edit = false) {
+  const items = await Certificate.find().sort({ createdAt: -1 }).limit(10).lean();
+  const text = items.length
+    ? items.map((c, i) => `${i + 1}. <b>${escapeHtml(c.fullName)}</b>\n   ${escapeHtml(c.courseTitle)}\n   ${escapeHtml(shareUrl(c))}`).join('\n\n')
+    : 'Bazada hali sertifikat yo‘q.';
+  const options = { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...mainKeyboard() };
+  if (edit) return ctx.editMessageText(text, options);
+  return ctx.reply(text, options);
+}
+
+async function sendExport(ctx, editMenu = false) {
+  try {
+    const certificates = await Certificate.find().sort({ createdAt: -1, _id: -1 }).lean();
+    if (!certificates.length) {
+      if (editMenu) return ctx.editMessageText('Eksport qilish uchun sertifikat topilmadi.', mainKeyboard());
+      return ctx.reply('Eksport qilish uchun sertifikat topilmadi.', mainKeyboard());
+    }
+
+    const workbook = await createCertificatesWorkbook(certificates);
+    const filename = `sertifikatlar-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const options = {
+      caption: 'Parol ustunidagi qiymatlar ism asosida yaratilgan demo qiymatlar, haqiqiy login parollari emas.',
+    };
+    if (!editMenu) Object.assign(options, mainKeyboard());
+    await ctx.replyWithDocument(Input.fromBuffer(workbook, filename), options);
+  } catch (e) {
+    console.error('[bot] export error', e);
+    if (editMenu) return ctx.editMessageText('❌ Excel eksportida xatolik yuz berdi.', mainKeyboard());
+    return ctx.reply('❌ Excel eksportida xatolik yuz berdi.', mainKeyboard());
+  }
+  if (editMenu) {
+    return ctx.editMessageText('✅ Excel fayli yuborildi.', mainKeyboard());
+  }
+}
+
+async function promptForAction(ctx, type, text) {
+  const messageId = ctx.callbackQuery.message.message_id;
+  pending.set(ctx.chat.id, { type, messageId });
+  return ctx.editMessageText(text, promptOptions());
 }
 
 function createBot() {
@@ -43,109 +141,192 @@ function createBot() {
 
   const bot = new Telegraf(botToken);
 
-  // Faqat adminlar (ADMIN_IDS bo'sh bo'lsa — hamma)
   bot.use(async (ctx, next) => {
     if (!adminIds.length) return next();
     const id = String(ctx.from?.id || '');
     if (adminIds.includes(id)) return next();
-    if (ctx.message) await ctx.reply(`⛔ Sizda ruxsat yo'q. Telegram ID: ${id}`);
+    if (ctx.message) await ctx.reply(`⛔ Sizda ruxsat yo‘q. Telegram ID: ${id}`);
     return undefined;
   });
 
-  bot.start((ctx) =>
-    ctx.replyWithHTML(
-      [
-        '👋 <b>Learn (clone)</b> — sertifikat boti',
-        '',
-        'O\'quvchining <b>ism-familiyasini</b> yuboring, masalan:',
-        '<code>ILHOMJONOVA MUBINAXON HUSNIDDIN QIZI</code>',
-        '',
-        'Keyin kursni tanlaysiz — bot email, parol va tasdiqlash linkini beradi.',
-        '',
-        'Buyruqlar:',
-        '/new — yangi sertifikat',
-        '/list — oxirgi 10 ta sertifikat',
-        '/find <i>ism</i> — qidirish',
-        '/delete <i>kod</i> — o\'chirish',
-      ].join('\n')
-    )
-  );
-
-  bot.command('new', (ctx) => {
+  bot.start(async (ctx) => {
     pending.delete(ctx.chat.id);
-    return ctx.reply('✍️ O\'quvchining ism-familiyasini yuboring:');
+    const message = await ctx.replyWithHTML(menuText(), mainKeyboard());
+    await deletePrivateMessage(ctx);
+    return message;
+  });
+
+  bot.command('new', async (ctx) => {
+    const message = await ctx.reply('✍️ O‘quvchining ism-familiyasini yuboring:', cancelKeyboard());
+    pending.set(ctx.chat.id, { type: 'new', messageId: message.message_id });
+    await deletePrivateMessage(ctx);
   });
 
   bot.command('list', async (ctx) => {
-    const items = await Certificate.find().sort({ createdAt: -1 }).limit(10).lean();
-    if (!items.length) return ctx.reply('Bazada hali sertifikat yo\'q.');
-    const lines = items.map(
-      (c, i) => `${i + 1}. <b>${escapeHtml(c.fullName)}</b>\n   ${escapeHtml(c.courseTitle)}\n   ${shareUrl(c)}`
-    );
-    return ctx.replyWithHTML(lines.join('\n\n'), { link_preview_options: { is_disabled: true } });
+    const message = await showCertificateList(ctx);
+    await deletePrivateMessage(ctx);
+    return message;
   });
 
   bot.command('find', async (ctx) => {
     const q = ctx.message.text.replace(/^\/find(@\w+)?/i, '').trim();
-    if (!q) return ctx.reply('Foydalanish: /find ism');
+    if (!q) {
+      const message = await ctx.reply('Foydalanish: /find ism', mainKeyboard());
+      await deletePrivateMessage(ctx);
+      return message;
+    }
     const safe = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const items = await Certificate.find({ fullName: new RegExp(safe, 'i') }).sort({ createdAt: -1 }).limit(10).lean();
-    if (!items.length) return ctx.reply('Topilmadi.');
-    const lines = items.map((c) => `<b>${escapeHtml(c.fullName)}</b> — ${escapeHtml(c.courseTitle)}\n<code>${c.email}</code>\n${shareUrl(c)}`);
-    return ctx.replyWithHTML(lines.join('\n\n'), { link_preview_options: { is_disabled: true } });
+    if (!items.length) {
+      const message = await ctx.reply('Topilmadi.', mainKeyboard());
+      await deletePrivateMessage(ctx);
+      return message;
+    }
+    const lines = items.map((c) => `<b>${escapeHtml(c.fullName)}</b> — ${escapeHtml(c.courseTitle)}\n<code>${escapeHtml(c.email)}</code>\n${escapeHtml(shareUrl(c))}`);
+    const message = await ctx.replyWithHTML(lines.join('\n\n'), { link_preview_options: { is_disabled: true }, ...mainKeyboard() });
+    await deletePrivateMessage(ctx);
+    return message;
   });
 
   bot.command('delete', async (ctx) => {
     const code = ctx.message.text.replace(/^\/delete(@\w+)?/i, '').trim().toUpperCase();
-    if (!code) return ctx.reply('Foydalanish: /delete KOD');
+    if (!code) {
+      const message = await ctx.reply('Foydalanish: /delete KOD', mainKeyboard());
+      await deletePrivateMessage(ctx);
+      return message;
+    }
     const res = await Certificate.deleteOne({ verifyCode: code });
-    return ctx.reply(res.deletedCount ? '🗑 O\'chirildi.' : 'Bunday kod topilmadi.');
+    const message = await ctx.reply(res.deletedCount ? '🗑 O‘chirildi.' : 'Bunday kod topilmadi.', mainKeyboard());
+    await deletePrivateMessage(ctx);
+    return message;
+  });
+
+  bot.command('export', async (ctx) => {
+    const message = await sendExport(ctx);
+    await deletePrivateMessage(ctx);
+    return message;
+  });
+
+  bot.action(/^menu:(new|list|find|delete|export|home)$/, async (ctx) => {
+    const action = ctx.match[1];
+    await ctx.answerCbQuery();
+
+    if (action === 'home') {
+      pending.delete(ctx.chat.id);
+      return ctx.editMessageText(menuText(), { parse_mode: 'HTML', ...mainKeyboard() });
+    }
+    if (action === 'new') {
+      return promptForAction(ctx, 'new', '✍️ O‘quvchining ism-familiyasini yuboring:');
+    }
+    if (action === 'find') {
+      return promptForAction(ctx, 'find', '🔎 Qidirish uchun ism yoki familiyani yuboring:');
+    }
+    if (action === 'delete') {
+      return promptForAction(ctx, 'delete', '🗑 O‘chirish uchun sertifikat kodini yuboring:');
+    }
+    if (action === 'list') return showCertificateList(ctx, true);
+    return sendExport(ctx, true);
+  });
+
+  bot.action(/^course:(.+)$/, async (ctx) => {
+    const state = pending.get(ctx.chat.id);
+    if (state?.type !== 'course' || !state.name) {
+      await ctx.answerCbQuery('Avval ism-familiyani yuboring.', { show_alert: true });
+      return;
+    }
+
+    await ctx.answerCbQuery('Yaratilmoqda...');
+    let result;
+    try {
+      result = await createCertificate({
+        fullName: state.name,
+        courseSlug: ctx.match[1],
+        telegramId: ctx.from.id,
+        username: ctx.from.username,
+      });
+    } catch (e) {
+      console.error('[bot] create error', e);
+      return ctx.reply(`Xatolik: ${e.message}`, mainKeyboard());
+    }
+
+    pending.delete(ctx.chat.id);
+    const text = resultMessage(result.cert, result.password, result.link);
+    const options = {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...resultKeyboard(result.link),
+    };
+    try {
+      return await ctx.editMessageText(text, options);
+    } catch (e) {
+      console.error('[bot] result edit error', e);
+      return ctx.replyWithHTML(text, options);
+    }
   });
 
   bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim();
     if (text.startsWith('/')) return undefined;
+    const state = pending.get(ctx.chat.id);
+
+    if (state?.type === 'find') {
+      const safe = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const items = await Certificate.find({ fullName: new RegExp(safe, 'i') }).sort({ createdAt: -1 }).limit(10).lean();
+      pending.delete(ctx.chat.id);
+      const result = items.length
+        ? items.map((c) => `<b>${escapeHtml(c.fullName)}</b> — ${escapeHtml(c.courseTitle)}\n<code>${escapeHtml(c.email)}</code>\n${escapeHtml(shareUrl(c))}`).join('\n\n')
+        : 'Topilmadi.';
+      const message = await ctx.telegram.editMessageText(ctx.chat.id, state.messageId, undefined, result, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...mainKeyboard(),
+      });
+      await deletePrivateMessage(ctx);
+      return message;
+    }
+
+    if (state?.type === 'delete') {
+      const code = text.toUpperCase();
+      const result = await Certificate.deleteOne({ verifyCode: code });
+      pending.delete(ctx.chat.id);
+      const message = await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        state.messageId,
+        undefined,
+        result.deletedCount ? '🗑 Sertifikat o‘chirildi.' : 'Bunday kod topilmadi.',
+        mainKeyboard()
+      );
+      await deletePrivateMessage(ctx);
+      return message;
+    }
+
     const name = normalizeFullName(text);
     if (name.length < 3 || !/\p{L}/u.test(name)) {
-      return ctx.reply('Iltimos, to\'g\'ri ism-familiya yuboring.');
+      if (state?.messageId) {
+        const message = await updatePrompt(ctx, state, 'Iltimos, to‘g‘ri ism-familiya yuboring:', promptOptions());
+        await deletePrivateMessage(ctx);
+        return message;
+      }
+      const message = await ctx.reply('Iltimos, to‘g‘ri ism-familiya yuboring.', mainKeyboard());
+      await deletePrivateMessage(ctx);
+      return message;
     }
-    pending.set(ctx.chat.id, name);
-    return ctx.replyWithHTML(`👤 <b>${escapeHtml(name)}</b>\n\n📚 Kursni tanlang:`, courseKeyboard());
-  });
 
-  bot.action('cancel', async (ctx) => {
-    pending.delete(ctx.chat.id);
-    await ctx.answerCbQuery('Bekor qilindi');
-    return ctx.editMessageText('Bekor qilindi. Yangi ism-familiya yuborishingiz mumkin.');
-  });
-
-  bot.action(/^course:(.+)$/, async (ctx) => {
-    const name = pending.get(ctx.chat.id);
-    if (!name) {
-      await ctx.answerCbQuery();
-      return ctx.reply('Avval ism-familiyani yuboring.');
-    }
-    await ctx.answerCbQuery('Yaratilmoqda...');
-    try {
-      const { cert, password, link } = await createCertificate({
-        fullName: name,
-        courseSlug: ctx.match[1],
-        telegramId: ctx.from.id,
-        username: ctx.from.username,
+    const prompt = `👤 <b>${escapeHtml(name)}</b>\n\n📚 Kursni tanlang:`;
+    const nextState = { type: 'course', name, messageId: state?.messageId };
+    pending.set(ctx.chat.id, nextState);
+    if (nextState.messageId) {
+      const message = await ctx.telegram.editMessageText(ctx.chat.id, nextState.messageId, undefined, prompt, {
+        parse_mode: 'HTML',
+        ...courseKeyboard(),
       });
-      pending.delete(ctx.chat.id);
-      await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-      // Telegram localhost URL tugmasini qabul qilmaydi — faqat ochiq URL bo'lsa tugma qo'shamiz
-      const isLocal = /^https?:\/\/(localhost|127\.)/.test(link);
-      const keyboard = isLocal ? {} : Markup.inlineKeyboard([[Markup.button.url('🌐 Sahifani ochish', link)]]);
-      return ctx.replyWithHTML(resultMessage(cert, password, link), {
-        ...keyboard,
-        link_preview_options: { is_disabled: true },
-      });
-    } catch (e) {
-      console.error('[bot] create error', e);
-      return ctx.reply(`Xatolik: ${e.message}`);
+      await deletePrivateMessage(ctx);
+      return message;
     }
+    const message = await ctx.replyWithHTML(prompt, courseKeyboard());
+    nextState.messageId = message.message_id;
+    await deletePrivateMessage(ctx);
+    return message;
   });
 
   bot.catch((err) => console.error('[bot] error', err));
@@ -159,7 +340,6 @@ async function startBot(app) {
   if (!bot) return null;
 
   if (useWebhook) {
-    // Yo'l token'dan hosil qilinadi (tashqaridan taxmin qilib bo'lmaydi); secret_token ni Telegraf o'zi tekshiradi
     const hookPath = `/telegram/webhook/${bot.secretPathComponent()}`;
     app.use(await bot.createWebhook({ domain: publicUrl, path: hookPath, secret_token: webhookSecret || undefined }));
     console.log(`[bot] webhook rejimi: ${publicUrl}/telegram/webhook/***`);

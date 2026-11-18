@@ -16,7 +16,10 @@ Bitta Node.js jarayoni ichida ishlaydi:
    - 12 belgili tasdiqlash kodi va link: `https://<domen>/share/<32-belgili-id>`
 4. Link ochilganda tasdiqlash sahifasi va sertifikat ko'rsatiladi.
 
-Bot buyruqlari: `/start`, `/new`, `/list`, `/find ism`, `/delete KOD`
+Bot buyruqlari: `/start`, `/new`, `/list`, `/find ism`, `/delete KOD`, `/export`.
+`/export` barcha sertifikatlarni Excel (`.xlsx`) faylida chiqaradi. Undagi parollar
+haqiqiy login parollari emas: har bir eksportda ism asosida 8 belgili demo parol
+yaratiladi (bitta tasodifiy raqam bilan), chunki haqiqiy parollar bazada faqat bcrypt hash ko‘rinishida saqlanadi.
 
 ## Yo'llar
 
