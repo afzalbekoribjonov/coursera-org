@@ -20,7 +20,6 @@ function createApp() {
   app.disable('x-powered-by');
 
   app.use('/static', express.static(path.join(__dirname, '..', 'public'), { maxAge: '7d' }));
-  app.use(express.urlencoded({ extended: false }));
 
   app.locals.brand = brand;
   app.locals.publicUrl = publicUrl;
@@ -40,7 +39,7 @@ function createApp() {
   });
 
   // Bosh sahifadagi forma: kod yoki link bo'yicha tekshirish
-  app.post('/lookup', async (req, res, next) => {
+  app.post('/lookup', express.urlencoded({ extended: false }), async (req, res, next) => {
     try {
       const raw = String(req.body.q || '').trim();
       const token = raw.split('/').filter(Boolean).pop() || '';
