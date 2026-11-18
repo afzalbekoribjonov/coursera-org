@@ -37,7 +37,7 @@ function courseKeyboard() {
 
 function menuText() {
   return [
-    '👋 <b>Learn (clone)</b> — sertifikat boti',
+    '👋 <b>Coursera</b> — sertifikat boti',
     '',
     'Kerakli amalni tugmalardan tanlang. Yangi sertifikat uchun ism-familiyani yuboring.',
     '',
