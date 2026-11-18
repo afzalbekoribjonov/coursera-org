@@ -59,13 +59,6 @@ async function sendInstructions(ctx) {
   await uploadDocument(ctx.chat.id, await createTemplateWorkbook(), 'shablon.xlsx', 'Shablon fayl');
 }
 
-async function downloadFile(ctx, fileId) {
-  const link = await ctx.telegram.getFileLink(fileId);
-  const res = await fetch(link.href, { signal: AbortSignal.timeout(60000) });
-  if (!res.ok) throw new Error(`Fayl yuklab olinmadi: ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
-}
-
 function summaryText({ created, errors, ignored }) {
   const lines = [`Bazaga saqlandi: ${created.length} ta sertifikat.`];
   if (ignored) lines.push(`Limitdan oshgani uchun ${ignored} ta qator qabul qilinmadi (maksimum ${MAX_ROWS}).`);
@@ -77,39 +70,90 @@ function summaryText({ created, errors, ignored }) {
   return lines.join('\n');
 }
 
-async function handleImport(ctx) {
-  const doc = ctx.message.document;
-  if (!/\.xlsx$/i.test(doc.file_name || '')) {
-    return ctx.reply(`Faqat .xlsx formatdagi Excel fayl qabul qilinadi.\n\n${instructions}`);
-  }
-  if (doc.file_size > maxImportBytes) return ctx.reply('Fayl hajmi 5 MB dan oshmasligi kerak.');
-  if (activeImports.has(ctx.chat.id)) return ctx.reply('Oldingi fayl hali qayta ishlanmoqda. Iltimos, kuting.');
+/** Bitta xabarni jonli tahrirlab, jarayonni ko'rsatadi (Telegram limitiga tushmaslik uchun chastota cheklangan). */
+function createProgress(telegram, chatId, messageId) {
+  let lastText = '';
+  let lastAt = 0;
+  return async (text, force = false) => {
+    const now = Date.now();
+    if (text === lastText || (!force && now - lastAt < 1200)) return;
+    lastText = text;
+    lastAt = now;
+    try {
+      await telegram.editMessageText(chatId, messageId, undefined, text);
+    } catch (e) {
+      if (e?.response?.error_code === 400 && /message is not modified/i.test(e.response.description || '')) return;
+      logBotError('[bot] progress update error', e);
+    }
+  };
+}
 
-  activeImports.add(ctx.chat.id);
+function progressBar(done, total) {
+  const width = 20;
+  const filled = total ? Math.round((done / total) * width) : 0;
+  return '[' + '#'.repeat(filled) + '-'.repeat(width - filled) + '] ' + done + '/' + total;
+}
+
+async function processImport(telegram, chatId, from, doc) {
+  const status = await telegram.sendMessage(chatId, 'Fayl qabul qilindi. Yuklab olinmoqda...');
+  const progress = createProgress(telegram, chatId, status.message_id);
   try {
-    const parsed = await parseImportWorkbook(await downloadFile(ctx, doc.file_id));
+    const link = await telegram.getFileLink(doc.file_id);
+    const res = await fetch(link.href, { signal: AbortSignal.timeout(60000) });
+    if (!res.ok) throw new Error('Fayl yuklab olinmadi: ' + res.status);
+    const buffer = Buffer.from(await res.arrayBuffer());
+
+    await progress('Fayl o‘qilmoqda va tekshirilmoqda...', true);
+    const parsed = await parseImportWorkbook(buffer);
     if (!parsed.rows.length) {
-      const reason = parsed.errors.length ? `\n\n${parsed.errors.slice(0, 20).join('\n')}` : '';
-      return await ctx.reply(`Faylda yaroqli qator topilmadi.${reason}\n\n${instructions}`);
+      const reason = parsed.errors.length ? '\n\n' + parsed.errors.slice(0, 20).join('\n') : '';
+      await progress('Faylda yaroqli qator topilmadi.' + reason + '\n\n' + instructions, true);
+      return;
     }
 
-    const { created, errors } = await importCertificates(parsed.rows, { telegramId: ctx.from.id, username: ctx.from.username });
+    const total = parsed.rows.length;
+    await progress('Bazaga saqlanmoqda...\n' + progressBar(0, total), true);
+    const { created, errors } = await importCertificates(
+      parsed.rows,
+      { telegramId: from.id, username: from.username },
+      (done) => progress('Bazaga saqlanmoqda...\n' + progressBar(done, total))
+    );
     const report = { created, errors: [...parsed.errors, ...errors], ignored: parsed.ignored };
-    await ctx.reply(summaryText(report));
-    if (!created.length) return undefined;
+    if (!created.length) {
+      await progress(summaryText(report), true);
+      return;
+    }
 
-    // Saqlangan ma'lumotlar qayta yig'ilib, foydalanuvchiga Excel ko'rinishida qaytariladi.
+    await progress('Bazaga saqlandi: ' + created.length + ' ta.\nMa‘lumotlar qayta yig‘ilmoqda va Excel tayyorlanmoqda...', true);
     const stored = await Certificate.find({ email: { $in: created.map((c) => c.email) } }).lean();
     const byEmail = new Map(stored.map((c) => [c.email, c]));
     const rows = created.map((c) => ({ ...byEmail.get(c.email), fullName: c.fullName, email: c.email, password: c.password }));
     const workbook = await createCertificatesWorkbook(rows);
-    return await uploadDocument(ctx.chat.id, workbook, `sertifikatlar-${new Date().toISOString().slice(0, 10)}.xlsx`, `Sertifikatlar: ${created.length} ta`);
+
+    await progress('Excel fayl yuborilmoqda...', true);
+    await uploadDocument(chatId, workbook, 'sertifikatlar-' + new Date().toISOString().slice(0, 10) + '.xlsx', 'Sertifikatlar: ' + created.length + ' ta');
+    await progress(summaryText(report) + '\n\nExcel fayl yuborildi.', true);
   } catch (e) {
     logBotError('[bot] import error', e);
-    return ctx.reply('Faylni qayta ishlashda xatolik yuz berdi. Fayl shablonga mosligini tekshirib, qayta yuboring.');
-  } finally {
-    activeImports.delete(ctx.chat.id);
+    await progress('Faylni qayta ishlashda xatolik yuz berdi. Fayl shablonga mosligini tekshirib, qayta yuboring.', true);
   }
+}
+
+async function handleImport(ctx) {
+  const doc = ctx.message.document;
+  if (!/.xlsx$/i.test(doc.file_name || '')) {
+    return ctx.reply('Faqat .xlsx formatdagi Excel fayl qabul qilinadi.\n\n' + instructions);
+  }
+  if (doc.file_size > maxImportBytes) return ctx.reply('Fayl hajmi 5 MB dan oshmasligi kerak.');
+  const chatId = ctx.chat.id;
+  if (activeImports.has(chatId)) return ctx.reply('Oldingi fayl hali qayta ishlanmoqda. Iltimos, kuting.');
+
+  activeImports.add(chatId);
+  // Webhook javobi kechikmasligi uchun (Telegram qayta yuborib yubormasin) ish orqa fonda bajariladi.
+  void processImport(ctx.telegram, chatId, ctx.from, doc)
+    .catch((e) => logBotError('[bot] import task error', e))
+    .finally(() => activeImports.delete(chatId));
+  return undefined;
 }
 
 function createBot() {

@@ -65,10 +65,11 @@ async function parseImportWorkbook(buffer) {
 }
 
 /** Qatorlar bo'yicha sertifikat yaratadi. Qolgan maydonlar (kurs, sana, parol, kod, link) avtomatik to'ldiriladi. */
-async function importCertificates(rows, creator = {}) {
+async function importCertificates(rows, creator = {}, onProgress = () => {}) {
   const course = courses[0];
   const created = [];
   const errors = [];
+  let done = 0;
   for (const row of rows) {
     const password = generateExportPassword(row.fullName);
     try {
@@ -86,6 +87,8 @@ async function importCertificates(rows, creator = {}) {
       const message = e.code === 11000 ? 'Bu email bazada mavjud' : e.message;
       errors.push(`${row.number}-qator: ${message}`);
     }
+    done += 1;
+    onProgress(done);
   }
   return { created, errors };
 }
