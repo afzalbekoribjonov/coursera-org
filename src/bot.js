@@ -15,6 +15,10 @@ function logBotError(label, error) {
   console.error(label, sanitized);
 }
 
+function isMessageUnchanged(error) {
+  return error?.response?.error_code === 400 && /message is not modified/i.test(error.response.description || '');
+}
+
 async function answerCallback(ctx, text, extra) {
   try {
     await ctx.answerCbQuery(text, extra);
@@ -127,6 +131,7 @@ async function updateExportStatus(telegram, chatId, messageId, text) {
   try {
     await telegram.editMessageText(chatId, messageId, undefined, text, mainKeyboard());
   } catch (e) {
+    if (isMessageUnchanged(e)) return;
     logBotError('[bot] export status error', e);
   }
 }
@@ -286,7 +291,11 @@ function createBot() {
       return promptForAction(ctx, 'delete', '🗑 O‘chirish uchun sertifikat kodini yuboring:');
     }
     if (action === 'list') return showCertificateList(ctx, true);
-    await ctx.editMessageText('⏳ Excel fayli tayyorlanmoqda…', mainKeyboard());
+    try {
+      await ctx.editMessageText('⏳ Excel fayli tayyorlanmoqda…', mainKeyboard());
+    } catch (e) {
+      if (!isMessageUnchanged(e)) throw e;
+    }
     startExport(ctx.telegram, ctx.chat.id, ctx.callbackQuery.message.message_id);
   });
 
