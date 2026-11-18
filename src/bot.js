@@ -1,4 +1,4 @@
-const { Telegraf, Markup, Input } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const Certificate = require('./models/Certificate');
 const { createCertificate, normalizeFullName, courses, shareUrl } = require('./services/certificates');
 const { createCertificatesWorkbook } = require('./services/certificate-export');
@@ -7,6 +7,35 @@ const { botToken, adminIds, publicUrl, useWebhook, webhookSecret } = require('./
 const pending = new Map();
 const activeExports = new Set();
 const maxTelegramDocumentBytes = 50 * 1024 * 1024;
+
+/** Hujjatni Node'ning o'z fetch'i bilan yuboradi (Telegraf'ning node-fetch keep-alive ulanishi "socket hang up" beradi). */
+async function uploadDocument(chatId, buffer, filename, caption) {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const form = new FormData();
+      form.append('chat_id', String(chatId));
+      form.append('caption', caption);
+      form.append('document', new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), filename);
+      const res = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(60000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return data.result;
+      const error = new Error(`Telegram sendDocument: ${res.status} ${data.description || ''}`);
+      if (res.status >= 400 && res.status < 500 && res.status !== 429) throw Object.assign(error, { fatal: true });
+      lastError = error;
+    } catch (e) {
+      if (e.fatal) throw e;
+      lastError = e;
+    }
+    console.warn(`[bot] sendDocument attempt ${attempt} failed: ${lastError?.cause?.code || lastError?.message}`);
+    await new Promise((r) => setTimeout(r, 1000 * attempt));
+  }
+  throw lastError;
+}
 
 function logBotError(label, error) {
   const detail = error?.stack || error?.message || String(error);
@@ -153,7 +182,7 @@ async function sendExport(telegram, chatId, statusMessageId) {
 
     const filename = `sertifikatlar-${new Date().toISOString().slice(0, 10)}.xlsx`;
     const options = { caption: 'Parol ustunidagi qiymatlar ism asosida yaratilgan demo qiymatlar, haqiqiy login parollari emas.' };
-    await telegram.sendDocument(chatId, Input.fromBuffer(workbook, filename), options);
+    await uploadDocument(chatId, workbook, filename, options.caption);
   } catch (e) {
     logBotError('[bot] export error', e);
     const text = e.code === 'EXPORT_TOO_LARGE'
