@@ -30,7 +30,7 @@ async function createCertificatesWorkbook(certificates) {
       number: index + 1,
       fullName: certificate.fullName,
       email: certificate.email,
-      password: generateExportPassword(certificate.fullName),
+      password: certificate.password || generateExportPassword(certificate.fullName),
       certificateLink: shareUrl(certificate),
     });
   });

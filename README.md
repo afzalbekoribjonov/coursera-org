@@ -8,18 +8,13 @@ Bitta Node.js jarayoni ichida ishlaydi:
 
 ## Ishlash tartibi
 
-1. Botga o'quvchining ism-familiyasi yuboriladi: `ILHOMJONOVA MUBINAXON HUSNIDDIN QIZI`
-2. Kurs tugma orqali tanlanadi.
-3. Bot avtomatik yaratadi va MongoDB'ga saqlaydi:
-   - demo email: `ilhomjonova.mubinaxon586@gmail.com` (haqiqiy pochta emas)
-   - parol (bazada bcrypt hash ko'rinishida saqlanadi)
-   - 12 belgili tasdiqlash kodi va link: `https://<domen>/share/<32-belgili-id>`
-4. Link ochilganda tasdiqlash sahifasi va sertifikat ko'rsatiladi.
+1. Botga Excel (.xlsx) fayl yuboriladi: 1-qatorda sarlavhalar (`Ism familiya`, `Gmail`), 2-qatordan boshlab ma'lumotlar. `/start` shablon faylni yuboradi.
+2. Bir yuborishda 100 tagacha qator qabul qilinadi.
+3. Bot qolgan maydonlarni avtomatik to'ldirib MongoDB'ga saqlaydi (kurs, sana, 8 belgili parol — bazada bcrypt hash, 12 belgili tasdiqlash kodi, `/share/<32-belgili-id>` link).
+4. Saqlangandan so'ng bot ma'lumotlarni qayta yig'ib Excel qaytaradi: ism familiya, email, parol, sertifikat linki.
+5. Link ochilganda tasdiqlash sahifasi va sertifikat ko'rsatiladi.
 
-Bot buyruqlari: `/start`, `/new`, `/list`, `/find ism`, `/delete KOD`, `/export`.
-`/export` barcha sertifikatlarni Excel (`.xlsx`) faylida chiqaradi. Undagi parollar
-haqiqiy login parollari emas: har bir eksportda ism asosida 8 belgili demo parol
-yaratiladi (bitta tasodifiy raqam bilan), chunki haqiqiy parollar bazada faqat bcrypt hash ko‘rinishida saqlanadi.
+Bot faqat `/start` buyrug'ini biladi; boshqa tugma va buyruqlar yo'q.
 
 ## Yo'llar
 

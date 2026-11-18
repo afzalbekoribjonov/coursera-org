@@ -86,14 +86,20 @@ function findCourse(slug) {
  * Yangi sertifikat yaratadi va bazaga saqlaydi.
  * @returns {{ cert, password, link }}
  */
-async function createCertificate({ fullName, courseSlug, telegramId, username }) {
+async function createCertificate({ fullName, courseSlug, telegramId, username, email: givenEmail, password: givenPassword }) {
   const name = normalizeFullName(fullName);
   if (name.length < 3) throw new Error('Ism-familiya juda qisqa');
   const course = findCourse(courseSlug);
   if (!course) throw new Error('Kurs topilmadi');
 
-  const email = await generateEmail(name);
-  const password = generatePassword();
+  let email;
+  if (givenEmail) {
+    email = String(givenEmail).trim().toLowerCase();
+    if (await Certificate.exists({ email })) throw new Error('Bu email bazada mavjud');
+  } else {
+    email = await generateEmail(name);
+  }
+  const password = givenPassword || generatePassword();
   const passwordHash = await bcrypt.hash(password, 10);
 
   const cert = await Certificate.create({
