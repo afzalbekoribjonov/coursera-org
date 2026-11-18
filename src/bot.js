@@ -189,6 +189,8 @@ function createBot() {
   }
 
   const bot = new Telegraf(botToken);
+  // Webhook rejimida birinchi API chaqiruvi HTTP javob sifatida ketib, `true` qaytaradi (message_id yo'qoladi).
+  bot.telegram.webhookReply = false;
 
   bot.use(async (ctx, next) => {
     if (!adminIds.length) return next();
